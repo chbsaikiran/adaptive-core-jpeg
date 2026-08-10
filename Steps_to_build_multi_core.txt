@@ -1,0 +1,33 @@
+Here are the exact steps/commands used to configure, build, and run the multicore (OpenMP) test target — no code changes, just the build commands.
+
+0. Prerequisite: Visual Studio 2026 (or your installed VS version) with the C++ workload — no NASM needed for this, since these steps disable SIMD to keep the build fast/dependency-free.
+
+1. Remove any stale build folder (if one already exists):
+
+
+Remove-Item -Recurse -Force "e:\Saikiran\Teaching\SriVasavi\Projects\2026-2027\jpeg\build" -ErrorAction SilentlyContinue
+2. Create the build folder and configure with CMake (using the CMake bundled inside your VS install, since standalone CMake isn't on PATH):
+
+
+$cmake = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+New-Item -ItemType Directory -Force "e:\Saikiran\Teaching\SriVasavi\Projects\2026-2027\jpeg\build"
+Set-Location "e:\Saikiran\Teaching\SriVasavi\Projects\2026-2027\jpeg\build"
+& $cmake -G "Visual Studio 18 2026" -A x64 -DWITH_SIMD=0 -DWITH_OPENMP=1 -DWITH_JPEG7=0 ..
+
+(Swap "Visual Studio 18 2026" for whatever generator your cmake --help lists for your VS version — e.g. "Visual Studio 17 2022".)
+
+3. Build just the multicore test target, Release config:
+
+
+& $cmake --build . --config Release --target jcparalleltest-static -- -maxCpuCount
+
+4. Run it directly:
+
+
+.\Release\jcparalleltest-static.exe
+5. Or run it via CTest (same test, registered with the test suite):
+
+
+$ctest = "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
+& $ctest -C Release -R jcparalleltest --output-on-failure
+That's the full sequence — configure once (step 2), then repeat steps 3–5 after any future code changes to jcparallel.c/jcparalleltest.c.

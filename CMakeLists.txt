@@ -962,6 +962,21 @@ if(ENABLE_STATIC)
         JPAR_USE_OPENMP)
     endif()
 
+    # Per-image timing benchmark for jcparallel, over a directory of real
+    # images -- see jcparallelbench.c for what it's for.  Reuses cjpeg's
+    # existing BMP/PPM reader modules (not PNG/GIF/Targa, to avoid pulling
+    # in the spng/zlib static libs for marginal benefit here).
+    add_executable(jcparallelbench-static src/jcparallelbench.c
+      src/jcparallel.c src/cdjpeg.c src/rdbmp.c src/wrapper/rdppm-8.c)
+    set_property(TARGET jcparallelbench-static PROPERTY COMPILE_FLAGS
+      "-DBMP_SUPPORTED -DPPM_SUPPORTED")
+    target_link_libraries(jcparallelbench-static jpeg-static)
+    if(WITH_OPENMP)
+      target_link_libraries(jcparallelbench-static OpenMP::OpenMP_C)
+      target_compile_definitions(jcparallelbench-static PRIVATE
+        JPAR_USE_OPENMP)
+    endif()
+
     include(CheckFunctionExists)
     check_function_exists(fmemopen HAVE_FMEMOPEN)
     if(HAVE_FMEMOPEN)

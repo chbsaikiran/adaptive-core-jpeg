@@ -1,0 +1,14 @@
+# Build output
+/build/
+/build*/
+
+# Benchmark output (scripts/bench_2vs4.sh, scripts/run_bench.sh) --
+# machine-/dataset-specific, regenerated on demand, not meant to be committed
+/bench_results/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

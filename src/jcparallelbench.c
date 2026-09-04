@@ -42,15 +42,112 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <time.h>
 #include <setjmp.h>
-#include <dirent.h>
 #include <sys/stat.h>
 
 #include "jpeglib.h"
 #include "cdjpeg.h"             /* jinit_read_bmp/jinit_read_ppm, cjpeg_source_ptr */
 #include "jcparallel.h"
+
+/*
+ * This tool was written against POSIX (dirent.h for directory listing,
+ * strings.h for strcasecmp, clock_gettime(CLOCK_MONOTONIC) for timing).
+ * MSVC/Windows has none of those, so on _WIN32 we provide just enough of
+ * that surface -- a tiny opendir/readdir over _findfirst/_findnext, a
+ * strcasecmp alias, an S_ISREG fallback, and a clock_gettime backed by C11
+ * timespec_get -- to let the rest of this file build and run unchanged.
+ * Everywhere else, just use the real headers.
+ */
+#ifdef _WIN32
+
+#include <io.h>                 /* _findfirst / _findnext / _finddata_t */
+
+#define strcasecmp _stricmp
+#define strdup     _strdup
+
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+
+typedef struct {
+  intptr_t handle;
+  struct _finddata_t info;
+  int pending;                  /* 1 while `info` holds an unconsumed entry */
+} DIR;
+
+struct dirent {
+  char d_name[260];
+};
+
+static DIR *
+opendir(const char *name)
+{
+  DIR *d = (DIR *)malloc(sizeof(*d));
+  char pattern[4096];
+
+  if (!d)
+    return NULL;
+  snprintf(pattern, sizeof(pattern), "%s\\*", name);
+  d->handle = _findfirst(pattern, &d->info);
+  if (d->handle == -1) {
+    free(d);
+    return NULL;
+  }
+  d->pending = 1;
+  return d;
+}
+
+static struct dirent *
+readdir(DIR *d)
+{
+  static struct dirent ent;    /* non-reentrant, matching POSIX readdir() */
+  size_t n;
+
+  if (!d->pending && _findnext(d->handle, &d->info) != 0)
+    return NULL;
+  d->pending = 0;
+
+  n = strlen(d->info.name);
+  if (n >= sizeof(ent.d_name))
+    n = sizeof(ent.d_name) - 1;
+  memcpy(ent.d_name, d->info.name, n);
+  ent.d_name[n] = '\0';
+  return &ent;
+}
+
+static int
+closedir(DIR *d)
+{
+  if (!d)
+    return -1;
+  if (d->handle != -1)
+    _findclose(d->handle);
+  free(d);
+  return 0;
+}
+
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+
+/* Wall-clock time (not clock(), so it doesn't sum across OpenMP threads --
+ * see the file header).  timespec_get(TIME_UTC) is C11 and present in
+ * MSVC's <time.h>; it isn't guaranteed monotonic, but across the short
+ * back-to-back encodes this benchmark times that's not a concern. */
+static int
+clock_gettime(int clk_id, struct timespec *tp)
+{
+  (void)clk_id;
+  return timespec_get(tp, TIME_UTC) == TIME_UTC ? 0 : -1;
+}
+
+#else /* !_WIN32 */
+
+#include <strings.h>
+#include <dirent.h>
+
+#endif /* _WIN32 */
 
 #define DEFAULT_QUALITY  85
 #define DEFAULT_REPEAT   50

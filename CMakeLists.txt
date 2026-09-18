@@ -964,13 +964,19 @@ if(ENABLE_STATIC)
 
     # Per-image timing benchmark for jcparallel, over a directory of real
     # images -- see jcparallelbench.c for what it's for.  Reuses cjpeg's
-    # existing BMP/PPM reader modules (not PNG/GIF/Targa, to avoid pulling
-    # in the spng/zlib static libs for marginal benefit here).
+    # existing BMP/PNG/PPM reader modules (not GIF/Targa, low value here).
     add_executable(jcparallelbench-static src/jcparallelbench.c
-      src/jcparallel.c src/cdjpeg.c src/rdbmp.c src/wrapper/rdppm-8.c)
+      src/jcparallel.c src/cdjpeg.c src/rdbmp.c src/wrapper/rdpng-8.c
+      ${ZLIB_STATIC_SOURCES} ${SPNG_STATIC_SOURCES} src/wrapper/rdppm-8.c)
     set_property(TARGET jcparallelbench-static PROPERTY COMPILE_FLAGS
-      "-DBMP_SUPPORTED -DPPM_SUPPORTED")
+      "-DBMP_SUPPORTED -DPNG_SUPPORTED -DSPNG_STATIC -DPPM_SUPPORTED")
     target_link_libraries(jcparallelbench-static jpeg-static)
+    if(SPNG_LIBRARY)
+      target_link_libraries(jcparallelbench-static ${SPNG_LIBRARY})
+    endif()
+    if(NOT WITH_SYSTEM_SPNG AND ZLIB_LIBRARY)
+      target_link_libraries(jcparallelbench-static ${ZLIB_LIBRARY})
+    endif()
     if(WITH_OPENMP)
       target_link_libraries(jcparallelbench-static OpenMP::OpenMP_C)
       target_compile_definitions(jcparallelbench-static PRIVATE

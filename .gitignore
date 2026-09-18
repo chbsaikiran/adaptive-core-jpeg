@@ -6,6 +6,13 @@
 # machine-/dataset-specific, regenerated on demand, not meant to be committed
 /bench_results/
 
+# Downloaded benchmark datasets (e.g. DIV2K) -- multi-GB, fetched locally,
+# never meant to live in the repo. Point scripts/bench_2vs4.sh at wherever
+# you've unpacked these instead of committing them under testimages/.
+/testimages/DIV2K*
+/testimages/*DIV2K*
+/testimages/*.zip
+
 # Python
 __pycache__/
 *.pyc

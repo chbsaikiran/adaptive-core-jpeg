@@ -25,12 +25,13 @@
  *
  * Supported input formats: JPEG (8-bit/baseline or arithmetic; 12-/16-bit
  * precision files are skipped, since jpar_encode_strip's plain
- * jpeg_compress_struct API is 8-bit only), BMP, and PPM/PGM.  BMP/PPM/PGM
- * are decoded by reusing cjpeg's own existing, tested reader modules
- * (jinit_read_bmp()/jinit_read_ppm() from rdbmp.c/rdppm.c, declared in
- * cdjpeg.h) rather than reimplementing those formats.  Any other
- * extension is silently skipped, so pointing this at a real-world photo
- * folder that also contains stray non-image files is safe.
+ * jpeg_compress_struct API is 8-bit only), BMP, PNG, and PPM/PGM.
+ * BMP/PNG/PPM/PGM are decoded by reusing cjpeg's own existing, tested
+ * reader modules (jinit_read_bmp()/jinit_read_png()/jinit_read_ppm() from
+ * rdbmp.c/rdpng.c/rdppm.c, declared in cdjpeg.h) rather than
+ * reimplementing those formats.  Any other extension is silently skipped,
+ * so pointing this at a real-world photo folder that also contains stray
+ * non-image files is safe.
  *
  * A failure to load or encode one image is a warning, not a fatal error;
  * the run continues with the remaining images.
@@ -39,62 +40,53 @@
  * file.
  */
 
+#include <dirent.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <time.h>
-#include <setjmp.h>
-#include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 
-#include "jpeglib.h"
-#include "cdjpeg.h"             /* jinit_read_bmp/jinit_read_ppm, cjpeg_source_ptr */
+#include "cdjpeg.h" /* jinit_read_bmp/jinit_read_ppm, cjpeg_source_ptr */
 #include "jcparallel.h"
+#include "jpeglib.h"
 
-#define DEFAULT_QUALITY  85
-#define DEFAULT_REPEAT   50
-
+#define DEFAULT_QUALITY 85
+#define DEFAULT_REPEAT 50
 
 typedef struct {
   struct jpeg_error_mgr pub;
   jmp_buf setjmp_buffer;
 } bench_error_mgr;
 
-static void
-bench_error_exit(j_common_ptr cinfo)
-{
+static void bench_error_exit(j_common_ptr cinfo) {
   bench_error_mgr *myerr = (bench_error_mgr *)cinfo->err;
 
-  (*cinfo->err->output_message) (cinfo);
+  (*cinfo->err->output_message)(cinfo);
   longjmp(myerr->setjmp_buffer, 1);
 }
 
-
 /* One fully-decoded image, ready to hand to jpar_encode_strips_parallel(). */
 typedef struct {
-  JSAMPLE *data;                /* contiguous height*row_stride bytes */
-  JSAMPROW *rows;                /* height row pointers into data */
+  JSAMPLE *data;  /* contiguous height*row_stride bytes */
+  JSAMPROW *rows; /* height row pointers into data */
   JDIMENSION width, height;
   int components;
   J_COLOR_SPACE color_space;
 } loaded_image;
 
-static void
-free_loaded_image(loaded_image *img)
-{
+static void free_loaded_image(loaded_image *img) {
   free(img->data);
   free(img->rows);
   img->data = NULL;
   img->rows = NULL;
 }
 
-
 /* Loads an 8-bit JPEG file.  Returns FALSE (with img left zeroed) if the
  * file can't be decoded or isn't 8-bit. */
-static boolean
-load_jpeg(const char *path, loaded_image *img)
-{
+static boolean load_jpeg(const char *path, loaded_image *img) {
   struct jpeg_decompress_struct cinfo;
   bench_error_mgr jerr;
   FILE *f = fopen(path, "rb");
@@ -161,15 +153,13 @@ load_jpeg(const char *path, loaded_image *img)
   return TRUE;
 }
 
-
-/* Loads a BMP ('B') or PPM/PGM ('P') file by driving cjpeg's own existing
- * reader modules (the same ones cjpeg.c uses) directly, one scanline at a
- * time, copying each into our own persistent buffer -- the reader's
- * buffer is reused/overwritten on every get_pixel_rows() call, so it
- * can't be kept as-is the way jpar_encode_strip() needs its input. */
-static boolean
-load_via_cjpeg_reader(const char *path, char format, loaded_image *img)
-{
+/* Loads a BMP ('B'), PNG ('N'), or PPM/PGM ('P') file by driving cjpeg's
+ * own existing reader modules (the same ones cjpeg.c uses) directly, one
+ * scanline at a time, copying each into our own persistent buffer -- the
+ * reader's buffer is reused/overwritten on every get_pixel_rows() call,
+ * so it can't be kept as-is the way jpar_encode_strip() needs its input. */
+static boolean load_via_cjpeg_reader(const char *path, char format,
+                                     loaded_image *img) {
   struct jpeg_compress_struct cinfo;
   bench_error_mgr jerr;
   cjpeg_source_ptr src;
@@ -191,19 +181,25 @@ load_via_cjpeg_reader(const char *path, char format, loaded_image *img)
   }
 
   jpeg_create_compress(&cinfo);
-  cinfo.in_color_space = JCS_UNKNOWN;   /* let the reader pick */
+  cinfo.in_color_space = JCS_UNKNOWN; /* let the reader pick */
   cinfo.data_precision = 8;
 
-  src = (format == 'B') ? jinit_read_bmp(&cinfo, TRUE) : jinit_read_ppm(&cinfo);
+  if (format == 'B')
+    src = jinit_read_bmp(&cinfo, TRUE);
+  else if (format == 'N')
+    src = jinit_read_png(&cinfo);
+  else
+    src = jinit_read_ppm(&cinfo);
   src->input_file = f;
-  (*src->start_input) (&cinfo, src);
+  (*src->start_input)(&cinfo, src);
 
   /* BMP's use_inversion_array=TRUE path (needed to turn its bottom-up row
    * order into the top-down order everything else expects) requests a
    * virtual array via cinfo->mem, but that array's backing store isn't
    * actually allocated until realize_virt_arrays() runs -- normally done
-   * for us inside jpeg_start_compress(), which this path never calls. */
-  (*cinfo.mem->realize_virt_arrays) ((j_common_ptr)&cinfo);
+   * for us inside jpeg_start_compress(), which this path never calls.
+   * (A no-op for PNG/PPM, which never request a virtual array.) */
+  (*cinfo.mem->realize_virt_arrays)((j_common_ptr)&cinfo);
 
   if (cinfo.data_precision != 8) {
     fprintf(stderr, "skip %s: data precision %d not supported (need 8-bit)\n",
@@ -238,26 +234,24 @@ load_via_cjpeg_reader(const char *path, char format, loaded_image *img)
    * (no jpeg_start_compress()/jpeg_write_scanlines() calls in this path). */
   scanline = 0;
   while (scanline < cinfo.image_height) {
-    JDIMENSION num_rows = (*src->get_pixel_rows) (&cinfo, src);
+    JDIMENSION num_rows = (*src->get_pixel_rows)(&cinfo, src);
     JDIMENSION i;
 
     for (i = 0; i < num_rows && scanline < cinfo.image_height; i++, scanline++)
       memcpy(img->rows[scanline], src->buffer[i], row_stride);
   }
 
-  (*src->finish_input) (&cinfo, src);
+  (*src->finish_input)(&cinfo, src);
   jpeg_destroy_compress(&cinfo);
   fclose(f);
   return TRUE;
 }
 
-
 /* Returns the max component v_samp_factor libjpeg picks by default for the
  * given input color space -- needed to compute MCU row height for strip
  * splitting.  (Mirrors the helper of the same purpose in jcparalleltest.c.) */
-static int
-get_max_v_samp_factor(J_COLOR_SPACE in_color_space, int input_components)
-{
+static int get_max_v_samp_factor(J_COLOR_SPACE in_color_space,
+                                 int input_components) {
   struct jpeg_compress_struct cinfo;
   struct jpeg_error_mgr jerr;
   int i, max_v = 1;
@@ -280,10 +274,7 @@ get_max_v_samp_factor(J_COLOR_SPACE in_color_space, int input_components)
   return max_v;
 }
 
-
-static boolean
-has_extension(const char *name, const char *ext)
-{
+static boolean has_extension(const char *name, const char *ext) {
   size_t name_len = strlen(name), ext_len = strlen(ext);
 
   if (ext_len > name_len)
@@ -291,34 +282,28 @@ has_extension(const char *name, const char *ext)
   return strcasecmp(name + (name_len - ext_len), ext) == 0;
 }
 
-
 /* Loads `path` (dispatching on its extension) into *img.  Returns FALSE
  * (silently, no message) if the extension isn't one we handle. */
-static boolean
-load_image(const char *path, const char *name, loaded_image *img)
-{
+static boolean load_image(const char *path, const char *name,
+                          loaded_image *img) {
   if (has_extension(name, ".jpg") || has_extension(name, ".jpeg"))
     return load_jpeg(path, img);
   if (has_extension(name, ".bmp"))
     return load_via_cjpeg_reader(path, 'B', img);
+  if (has_extension(name, ".png"))
+    return load_via_cjpeg_reader(path, 'N', img);
   if (has_extension(name, ".ppm") || has_extension(name, ".pgm"))
     return load_via_cjpeg_reader(path, 'P', img);
   return FALSE;
 }
 
-
-static int
-compare_names(const void *a, const void *b)
-{
-  return strcmp(*(const char * const *)a, *(const char * const *)b);
+static int compare_names(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
-
 
 /* Lists `dir`'s regular files, sorted, into *names_out (caller frees each
  * entry and the array).  Returns the count, or -1 on failure to open. */
-static int
-list_dir_sorted(const char *dir, char ***names_out)
-{
+static int list_dir_sorted(const char *dir, char ***names_out) {
   DIR *d = opendir(dir);
   struct dirent *entry;
   char **names = NULL;
@@ -350,30 +335,23 @@ list_dir_sorted(const char *dir, char ***names_out)
   return count;
 }
 
-
-static double
-timespec_diff(struct timespec t0, struct timespec t1)
-{
+static double timespec_diff(struct timespec t0, struct timespec t1) {
   return (double)(t1.tv_sec - t0.tv_sec) +
          (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
 }
 
-
-static void
-usage(const char *progname)
-{
+static void usage(const char *progname) {
   fprintf(stderr,
-    "Usage: %s <dataset_dir> --threads N [--quality Q] [--repeat R]\n"
-    "  --threads N   number of strips/OpenMP threads to encode with (required)\n"
-    "  --quality Q   JPEG quality, 0-100 (default %d)\n"
-    "  --repeat R    encode each image R times and report mean/min (default %d)\n",
-    progname, DEFAULT_QUALITY, DEFAULT_REPEAT);
+          "Usage: %s <dataset_dir> --threads N [--quality Q] [--repeat R]\n"
+          "  --threads N   number of strips/OpenMP threads to encode with "
+          "(required)\n"
+          "  --quality Q   JPEG quality, 0-100 (default %d)\n"
+          "  --repeat R    encode each image R times and report mean/min "
+          "(default %d)\n",
+          progname, DEFAULT_QUALITY, DEFAULT_REPEAT);
 }
 
-
-int
-main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   const char *dataset_dir = NULL;
   int threads = -1, quality = DEFAULT_QUALITY, repeat = DEFAULT_REPEAT;
   char **names;
@@ -411,7 +389,8 @@ main(int argc, char **argv)
   }
 
   strips = (jpar_strip *)malloc(sizeof(jpar_strip) * (size_t)threads);
-  jpeg_bufs = (unsigned char **)malloc(sizeof(unsigned char *) * (size_t)threads);
+  jpeg_bufs =
+      (unsigned char **)malloc(sizeof(unsigned char *) * (size_t)threads);
   jpeg_sizes = (unsigned long *)malloc(sizeof(unsigned long) * (size_t)threads);
   if (!strips || !jpeg_bufs || !jpeg_sizes) {
     fprintf(stderr, "%s: out of memory\n", argv[0]);
@@ -428,8 +407,10 @@ main(int argc, char **argv)
     double sum_time = 0.0, min_time = 0.0;
 
     snprintf(path, sizeof(path), "%s/%s", dataset_dir, names[i]);
-    if (!load_image(path, names[i], &img))
+    if (!load_image(path, names[i], &img)) {
+      fprintf(stderr, "failed to load image %s\n", path);
       continue;
+    }
 
     max_v_samp_factor = get_max_v_samp_factor(img.color_space, img.components);
 
@@ -439,11 +420,10 @@ main(int argc, char **argv)
       boolean ok;
 
       clock_gettime(CLOCK_MONOTONIC, &t0);
-      ok = jpar_encode_strips_parallel(img.rows, img.width, img.height,
-                                        max_v_samp_factor, img.components,
-                                        img.color_space, quality, threads,
-                                        strips, jpeg_bufs, jpeg_sizes,
-                                        &num_strips);
+      ok = jpar_encode_strips_parallel(
+          img.rows, img.width, img.height, max_v_samp_factor, img.components,
+          img.color_space, quality, threads, strips, jpeg_bufs, jpeg_sizes,
+          &num_strips);
       clock_gettime(CLOCK_MONOTONIC, &t1);
 
       for (s = 0; s < num_strips; s++)
@@ -451,8 +431,8 @@ main(int argc, char **argv)
           free(jpeg_bufs[s]);
 
       if (!ok) {
-        fprintf(stderr, "warning: %s: encode failed on repeat %d\n",
-                names[i], rep);
+        fprintf(stderr, "warning: %s: encode failed on repeat %d\n", names[i],
+                rep);
         continue;
       }
 

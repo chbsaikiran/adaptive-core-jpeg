@@ -133,10 +133,92 @@ after editing `jcparallel.c`/`jcparallelbench.c` you can just re-run step 4
 directly — no need to reconfigure CMake unless `CMakeLists.txt` itself
 changed.
 
+## 6. Adaptive-core encoding (`jcadaptive-static`)
+
+This is the actual production path: given one real image, classify it as
+"simple" or "complex" (the model trained from step 4's `dataset.csv` — see
+[scripts/ml/README.md](scripts/ml/README.md)) and encode it with 2 or 4
+cores accordingly, producing one real, spliced `.jpg` file (not per-strip
+files — `jpar_splice_strips()` in `src/jcparallel.c` merges the strips via
+restart markers into a single valid JPEG).
+
+```bash
+cmake --build build --target jcadaptive-static -- -j"$(sysctl -n hw.ncpu)"
+./build/jcadaptive-static <input-image> <output.jpg> [-quality Q] [-threads N]
+```
+- `-quality Q` — JPEG quality, 0-100 (default 85).
+- `-threads N` — override the classifier and force that core count (for
+  comparison; normal use omits this and lets the classifier decide).
+
+Example:
+```bash
+$ ./build/jcadaptive-static testimages/vgl_5674_0098.png /tmp/out.jpg
+testimages/vgl_5674_0098.png: 120x96, predicted complex (P(simple)=0.000 P(complex)=1.000) -> 4 cores
+/tmp/out.jpg: wrote 9223 bytes (4 strips spliced, 4 cores)
+```
+
+### Decoding the output (visual proof it's a real, correct JPEG)
+
+`jcadaptive-static`'s output is one ordinary, standalone JPEG file — any
+JPEG decoder can open it, including macOS Preview/QuickLook. Two ways to
+look at it:
+
+**Quickest — just open it:**
+```bash
+open /tmp/out.jpg          # opens in Preview
+qlmanage -p /tmp/out.jpg   # or QuickLook, from the terminal
+```
+
+**Decode with this repo's own decoder** (`djpeg-static`, built alongside
+`cjpeg-static` — build both if you haven't: `cmake --build build --target
+cjpeg-static djpeg-static`) and compare side-by-side against the original:
+```bash
+./build/djpeg-static -png -outfile /tmp/out.png /tmp/out.jpg
+open testimages/vgl_5674_0098.png /tmp/out.png   # opens both in Preview
+```
+At quality 85 the two should look visually indistinguishable (JPEG is
+lossy, so they won't be byte-identical pixel data, but there should be no
+visible artifacting, banding, or strip seams — a strip seam specifically
+would indicate the restart-marker splice is broken, since it would show up
+as a visible discontinuity at the strip boundary rows).
+
+**Objective proof, not just "looks the same":** compare against a normal
+single-threaded encode of the same source image — if `jcadaptive-static`'s
+adaptive core selection and splicing are correct, the decoded pixels
+should match *exactly* (JPEG decode is deterministic, so two encodes at
+the same quality that produce the same compressed data decode to
+identical pixels; jcparallel's restart-marker splice is specifically
+designed to reproduce a standard single-threaded encode's output — see
+`src/jcparallel.h`):
+```bash
+./build/cjpeg-static -quality 85 -outfile /tmp/ref.jpg testimages/vgl_5674_0098.png
+./build/djpeg-static -outfile /tmp/ref.ppm /tmp/ref.jpg
+./build/djpeg-static -outfile /tmp/adaptive.ppm /tmp/out.jpg
+cmp /tmp/ref.ppm /tmp/adaptive.ppm && echo "IDENTICAL PIXELS" || echo "DIFFER"
+```
+This is exactly the check used to validate the splice implementation
+during development (see the "Verified" note below) — `cmp` printing
+nothing and `IDENTICAL PIXELS` is the proof the two encodes decode to the
+same image.
+
+Under the hood: `src/jcfeatures.c` computes the same 9 pre-encode pixel
+features as `scripts/ml/extract_features.py` (entropy, edge density/DCT
+energy, per-channel variance, etc. — see its header comment for the
+feature list and a note on numerical fidelity vs. the Python version),
+`src/complexity_model.c` (the trained Random Forest, exported from Python
+via `scripts/ml/export_c_model.py`) scores them, and the predicted label
+picks 2 vs 4 threads for `jpar_encode_strips_spliced()`.
+
+Verified: `jcparalleltest-static` decodes both the per-strip *and* spliced
+output and byte-compares against a single-threaded reference across thread
+counts 1-4 (`ctest -R jcparalleltest`); the spliced path was additionally
+checked against `cjpeg`/`djpeg` on real (non-synthetic) images of various
+sizes, pixel-identical in every case tried.
+
 ## Notes / caveats
 
 - **Supported input formats:** JPEG (8-bit only — 12-/16-bit precision
-  files are skipped with a warning), BMP, PPM/PGM. PNG/GIF/Targa and
+  files are skipped with a warning), BMP, PNG, PPM/PGM. GIF/Targa and other
   non-image files are silently skipped, so pointing `dataset_dir` at a
   folder with stray non-image files is safe.
 - **Small images are noisy.** On `testimages/` (≤230×230px), a single

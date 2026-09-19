@@ -42,9 +42,10 @@ uv run train_model.py
 
 # 4. Export the trained model to standalone C, for on-device inference
 #    (e.g. Jetson Nano) with no Python/runtime dependency -- see "Deploying
-#    to Jetson Nano" below
-uv run export_c_model.py
-#    -> bench_results/complexity_model.c
+#    to Jetson Nano" below. --out writes straight to the committed file
+#    jcadaptive-static (src/jcadaptive.c) actually builds against.
+uv run export_c_model.py --out ../../src/complexity_model.c
+#    -> src/complexity_model.c
 ```
 
 This requires `bench_results/dataset_train.csv` and `dataset_val.csv` to
@@ -198,9 +199,11 @@ function with **no runtime dependencies** (just `<string.h>`), so it can be
 compiled directly into `jcparallelbench` or any other C caller:
 
 ```bash
-uv run export_c_model.py
-#    -> bench_results/complexity_model.c  (~50 trees, ~3200 nodes, ~300 KB)
+uv run export_c_model.py --out ../../src/complexity_model.c
+#    -> src/complexity_model.c  (~50 trees, ~3200 nodes, ~300 KB)
 ```
+(Omitting `--out` writes to `bench_results/complexity_model.c` instead --
+useful for a quick look without touching the committed file in `src/`.)
 
 The generated file's header comment documents the calling convention:
 
@@ -216,12 +219,27 @@ This was verified by cross-checking the C output against
 matched to 6 decimal places, and the file compiles cleanly with plain
 `gcc -O2` (no external libraries beyond `-lm`).
 
-**Caveat:** this only exports the *classifier*. `extract_features.py` (the
-9 pre-encode features) is currently Python/Pillow/scipy and still needs a C
-reimplementation (Sobel gradients, block DCT, histogram entropy, etc. are
-all straightforward in C, but that port hasn't been done yet) before the
-whole pipeline can run on the Nano without Python.
+**Feature extraction is now ported to C too**: `src/jcfeatures.c`
+(`jcfeat_extract()`) computes the same 9 features from already-decoded
+pixel rows -- Sobel gradients, block DCT, histogram entropy, per-channel
+variance, HSV saturation. It's a close but not bit-exact port (differs in
+Sobel boundary handling and floating-point rounding from numpy/scipy); on
+a real DIV2K image, every feature matched the Python pipeline to at least
+4 significant figures. See `src/jcfeatures.h`'s header comment for the
+full fidelity notes.
 
-Re-run `export_c_model.py` any time `train_model.py` produces a new
-`complexity_model.joblib` — the generated C file is derived output, not
-meant to be hand-edited.
+`src/jcadaptive.c` wires both pieces together end-to-end: load one image
+(`src/jcimageload.c`) -> `jcfeat_extract()` -> `score()`
+(`src/complexity_model.c`) -> pick 2 or 4 cores ->
+`jpar_encode_strips_spliced()` (`src/jcparallel.c`, which also implements
+the restart-marker splice into a single output JPEG). See
+[Steps_to_build_and_benchmark_mac.md](../../Steps_to_build_and_benchmark_mac.md)
+section 6 for how to build and run it -- this is the actual on-device
+target this section originally motivated, not just a planned direction.
+
+Re-run `export_c_model.py --out ../../src/complexity_model.c` any time
+`train_model.py` produces a new `complexity_model.joblib` -- the generated
+C file is committed to the repo (a build input for `jcadaptive-static`,
+unlike this directory's other outputs under `bench_results/`, which are
+gitignored and regenerated on demand) and derived output, not meant to be
+hand-edited.

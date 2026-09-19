@@ -16,14 +16,17 @@
  *      decoded rows into a full-image buffer at the strip's original row
  *      offset.
  *   5. Byte-compares the reassembled pixels against the reference decode.
+ *   6. Separately, also encodes the same image with
+ *      jpar_encode_strips_spliced() (same thread counts) and decodes *that*
+ *      single spliced JPEG directly with one ordinary decode pass, byte-
+ *      comparing against the same reference.
  *
- * Note that step 4 decodes each strip as its own standalone JPEG -- this
- * test does NOT exercise the (not-yet-written) restart-marker splicing
- * step that would merge the strips into a single JPEG file.  It verifies
- * that the strip-splitting and per-strip encoding logic itself is correct
- * and reproduces the same pixels a single-threaded encode would.
+ * Step 4-5 decode each strip as its own standalone JPEG, isolating the
+ * strip-splitting/per-strip-encoding logic; step 6 instead exercises the
+ * restart-marker splice (jpar_splice_strips()) that merges strips into one
+ * real JPEG file, the form jcadaptive.c actually ships.
  *
- * Exit code is 0 if every thread count passes, 1 otherwise.
+ * Exit code is 0 if every thread count passes both checks, 1 otherwise.
  */
 
 #include <stdio.h>
@@ -350,6 +353,69 @@ main(void)
                num_strips, (unsigned)row, (unsigned)col, comp,
                assembled_pixels[diff_at], ref_pixels[diff_at]);
         overall_ok = 0;
+      }
+    }
+
+    /* Same image/thread count, but through the spliced single-file path
+     * (jpar_encode_strips_spliced()/jpar_splice_strips()) -- decodes one
+     * real JPEG in one pass, rather than reassembling separately-decoded
+     * strips. */
+    {
+      unsigned char *spliced_buf = NULL;
+      unsigned long spliced_size = 0;
+      int spliced_num_strips = 0;
+      boolean splice_encode_ok, splice_decode_ok;
+
+      splice_encode_ok = jpar_encode_strips_spliced(
+          rows, TEST_WIDTH, TEST_HEIGHT, max_v_samp_factor, 3, JCS_RGB,
+          TEST_QUALITY, num_threads, &spliced_buf, &spliced_size,
+          &spliced_num_strips);
+
+      if (!splice_encode_ok) {
+        printf("[FAIL] threads=%d: spliced encode failed\n", num_threads);
+        overall_ok = 0;
+      } else {
+        JDIMENSION decoded_rows;
+
+        splice_decode_ok = decode_jpeg(spliced_buf, spliced_size, TEST_WIDTH,
+                                        assembled_pixels, row_stride, 0,
+                                        &decoded_rows) &&
+                            decoded_rows == (JDIMENSION)TEST_HEIGHT;
+        free(spliced_buf);
+
+        if (!splice_decode_ok) {
+          printf("[FAIL] threads=%d: spliced JPEG failed to decode\n",
+                 num_threads);
+          overall_ok = 0;
+        } else {
+          size_t total_bytes = (size_t)row_stride * TEST_HEIGHT;
+          size_t diff_at = total_bytes;
+          size_t k;
+
+          for (k = 0; k < total_bytes; k++) {
+            if (assembled_pixels[k] != ref_pixels[k]) {
+              diff_at = k;
+              break;
+            }
+          }
+
+          if (diff_at == total_bytes) {
+            printf("[PASS] threads=%d strips=%d spliced: decoded pixels "
+                   "match reference exactly\n", num_threads,
+                   spliced_num_strips);
+          } else {
+            JDIMENSION row = (JDIMENSION)(diff_at / row_stride);
+            JDIMENSION col = (JDIMENSION)((diff_at % row_stride) / 3);
+            int comp = (int)(diff_at % 3);
+
+            printf("[FAIL] threads=%d strips=%d spliced: first mismatch at "
+                   "row=%u col=%u component=%d (got %d, expected %d)\n",
+                   num_threads, spliced_num_strips, (unsigned)row,
+                   (unsigned)col, comp, assembled_pixels[diff_at],
+                   ref_pixels[diff_at]);
+            overall_ok = 0;
+          }
+        }
       }
     }
   }

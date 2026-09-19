@@ -17,6 +17,8 @@
 __pycache__/
 *.pyc
 .venv/
+out*.png
+out*.jpg
 
 # macOS
 .DS_Store

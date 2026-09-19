@@ -9,10 +9,11 @@ numpy/scipy/scikit-learn stack on-device and is fragile across library
 version mismatches, neither of which is appealing on a resource-constrained
 board.
 
-NOTE: this only exports the *classifier*. The 9 features it expects
-(extract_features.FEATURE_NAMES) are currently computed in Python
-(Pillow/numpy/scipy) -- extract_features.py itself still needs a C
-reimplementation before this can run end-to-end without Python on-device.
+This exports the *classifier* only. The 9 features it expects
+(extract_features.FEATURE_NAMES) are computed in Python here
+(Pillow/numpy/scipy) but have a separate, independent C port for on-device
+use: src/jcfeatures.c (see its header comment for fidelity caveats --
+it's a close but not bit-exact port).
 """
 
 import argparse
@@ -55,7 +56,7 @@ def main() -> None:
             " *   Predicted label = argmax(output) (0=simple, 1=complex).",
             " *",
             " * Features must be computed exactly as in scripts/ml/extract_features.py",
-            " * (currently Python/Pillow/scipy -- not yet ported to C).",
+            " * -- see src/jcfeatures.c for the C port (jcfeat_extract()).",
             " */",
             "",
         ]

@@ -7,10 +7,9 @@
  * standalone building block for a strip-parallel encoder:  an image is cut
  * into horizontal strips, each strip is compressed independently (and, when
  * built with OpenMP, in parallel across threads) into its own standalone
- * JPEG stream, and the resulting per-strip streams can later be spliced
- * into a single JPEG file using restart markers (that splicing step is not
- * implemented here yet -- see the design notes in the accompanying
- * conversation/README for the full plan.)
+ * JPEG stream, and the resulting per-strip streams are spliced into a
+ * single JPEG file using restart markers (jpar_splice_strips() /
+ * jpar_encode_strips_spliced(), below).
  *
  * For conditions of distribution and use, see the accompanying README.ijg
  * file.
@@ -80,11 +79,12 @@ EXTERN(int) jpar_compute_strip_bounds(JDIMENSION image_height,
  * edge-replication there if "fancy" chroma upsampling is enabled (the
  * decompress-side do_fancy_upsampling, on by default) -- producing pixels
  * that differ from decoding the same region inside a single continuous
- * image, purely as an artifact of decoding strips in isolation.  Once
- * strips are spliced into one JPEG (not yet implemented), decoding sees
- * continuous chroma context across former strip boundaries and this
- * caveat no longer applies.  Until then, disable do_fancy_upsampling on
- * both sides of any strip-vs-reference pixel comparison.
+ * image, purely as an artifact of decoding strips in isolation.  This
+ * caveat applies only when decoding strips separately, as jcparalleltest.c
+ * does to isolate encode-side correctness; jpar_encode_strips_spliced()
+ * below produces one continuous JPEG, where decoding sees continuous
+ * chroma context across former strip boundaries and this caveat does not
+ * apply.
  *
  * On success, returns TRUE and sets *jpeg_buf/*jpeg_size; the caller must
  * free(*jpeg_buf) when done with it.  On failure, returns FALSE and leaves
@@ -128,5 +128,67 @@ EXTERN(boolean) jpar_encode_strips_parallel(JSAMPARRAY image_rows,
                                              unsigned char **jpeg_bufs,
                                              unsigned long *jpeg_sizes,
                                              int *num_strips_out);
+
+/*
+ * Splices `num_strips` standalone per-strip JPEGs (as produced by
+ * jpar_encode_strip(), which sets a restart interval of one MCU row on
+ * every strip specifically so this works -- see jcparallel.c) into a
+ * single valid baseline JPEG of the given full image height, using restart
+ * markers at each strip boundary.
+ *
+ * How this works: every strip is encoded with a restart marker after every
+ * MCU row, so restart boundaries land at a fixed, width-derived spacing
+ * that's identical across all strips (unlike strip *height*, which can
+ * differ for the last strip -- see jpar_compute_strip_bounds()).  This
+ * function takes strip 0's header verbatim (SOI through the SOS segment --
+ * same quality/quantization/Huffman tables and restart interval on every
+ * strip already, by construction), patches its SOF0 height field to the
+ * full image height, concatenates every strip's entropy-coded scan data
+ * (trimming any restart marker libjpeg happened to emit immediately before
+ * a strip's own EOI, and inserting exactly one restart marker of its own
+ * at each strip boundary instead), renumbers every restart marker
+ * (RST0..RST7, cycling) sequentially across the whole spliced scan -- each
+ * strip's own internal numbering restarts from 0, since it was encoded as
+ * an independent compress session -- and appends a single EOI.
+ *
+ * Decoding the spliced result sees one continuous scan: DC prediction
+ * resets at each restart marker exactly where each strip's own independent
+ * encode would have started predicting from 0 anyway, so this reproduces
+ * the same decoded pixels as jpar_encode_strip() per strip while being one
+ * standalone, complete JPEG file.
+ *
+ * On success, returns TRUE and sets *out_buf/*out_size (caller must
+ * free(*out_buf)).  Returns FALSE if num_strips < 1 or any strip's buffer
+ * doesn't parse as the expected single-scan baseline JPEG structure.
+ */
+EXTERN(boolean) jpar_splice_strips(unsigned char *const *jpeg_bufs,
+                                    const unsigned long *jpeg_sizes,
+                                    int num_strips,
+                                    JDIMENSION full_image_height,
+                                    unsigned char **out_buf,
+                                    unsigned long *out_size);
+
+/*
+ * Convenience driver: like jpar_encode_strips_parallel(), but returns one
+ * spliced JPEG buffer (via jpar_splice_strips()) instead of an array of
+ * per-strip buffers.  Manages its own strip/jpeg_bufs/jpeg_sizes scratch
+ * arrays internally (sized to num_threads) and frees the per-strip buffers
+ * before returning.
+ *
+ * *num_strips_out receives the actual number of strips used (informational
+ * -- see jpar_compute_strip_bounds()).  On success, returns TRUE and sets
+ * *out_buf/*out_size (caller must free(*out_buf)).  Returns FALSE if any
+ * strip failed to encode or splicing failed.
+ */
+EXTERN(boolean) jpar_encode_strips_spliced(JSAMPARRAY image_rows,
+                                            JDIMENSION image_width,
+                                            JDIMENSION image_height,
+                                            int max_v_samp_factor,
+                                            int input_components,
+                                            J_COLOR_SPACE in_color_space,
+                                            int quality, int num_threads,
+                                            unsigned char **out_buf,
+                                            unsigned long *out_size,
+                                            int *num_strips_out);
 
 #endif /* JCPARALLEL_H */

@@ -966,8 +966,9 @@ if(ENABLE_STATIC)
     # images -- see jcparallelbench.c for what it's for.  Reuses cjpeg's
     # existing BMP/PNG/PPM reader modules (not GIF/Targa, low value here).
     add_executable(jcparallelbench-static src/jcparallelbench.c
-      src/jcparallel.c src/cdjpeg.c src/rdbmp.c src/wrapper/rdpng-8.c
-      ${ZLIB_STATIC_SOURCES} ${SPNG_STATIC_SOURCES} src/wrapper/rdppm-8.c)
+      src/jcparallel.c src/jcimageload.c src/cdjpeg.c src/rdbmp.c
+      src/wrapper/rdpng-8.c ${ZLIB_STATIC_SOURCES} ${SPNG_STATIC_SOURCES}
+      src/wrapper/rdppm-8.c)
     set_property(TARGET jcparallelbench-static PROPERTY COMPILE_FLAGS
       "-DBMP_SUPPORTED -DPNG_SUPPORTED -DSPNG_STATIC -DPPM_SUPPORTED")
     target_link_libraries(jcparallelbench-static jpeg-static)
@@ -981,6 +982,34 @@ if(ENABLE_STATIC)
       target_link_libraries(jcparallelbench-static OpenMP::OpenMP_C)
       target_compile_definitions(jcparallelbench-static PRIVATE
         JPAR_USE_OPENMP)
+    endif()
+
+    # Adaptive-core encoder CLI: classifies one image as simple/complex
+    # (complexity_model.c, an ML-trained Random Forest exported to C -- see
+    # scripts/ml/README.md) from pre-encode pixel features (jcfeatures.c)
+    # and picks 2 vs 4 cores for jcparallel accordingly, splicing the
+    # result into a single output JPEG.  Shares jcimageload.c/cdjpeg's
+    # readers with jcparallelbench-static above.
+    add_executable(jcadaptive-static src/jcadaptive.c
+      src/jcparallel.c src/jcimageload.c src/jcfeatures.c
+      src/complexity_model.c src/cdjpeg.c src/rdbmp.c
+      src/wrapper/rdpng-8.c ${ZLIB_STATIC_SOURCES} ${SPNG_STATIC_SOURCES}
+      src/wrapper/rdppm-8.c)
+    set_property(TARGET jcadaptive-static PROPERTY COMPILE_FLAGS
+      "-DBMP_SUPPORTED -DPNG_SUPPORTED -DSPNG_STATIC -DPPM_SUPPORTED")
+    target_link_libraries(jcadaptive-static jpeg-static)
+    if(SPNG_LIBRARY)
+      target_link_libraries(jcadaptive-static ${SPNG_LIBRARY})
+    endif()
+    if(NOT WITH_SYSTEM_SPNG AND ZLIB_LIBRARY)
+      target_link_libraries(jcadaptive-static ${ZLIB_LIBRARY})
+    endif()
+    if(UNIX)
+      target_link_libraries(jcadaptive-static m)
+    endif()
+    if(WITH_OPENMP)
+      target_link_libraries(jcadaptive-static OpenMP::OpenMP_C)
+      target_compile_definitions(jcadaptive-static PRIVATE JPAR_USE_OPENMP)
     endif()
 
     include(CheckFunctionExists)

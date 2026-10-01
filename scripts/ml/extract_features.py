@@ -20,6 +20,12 @@ from PIL import Image
 from scipy.fftpack import dct
 from scipy.ndimage import sobel
 
+# Factor the shipped model is trained at. Keep in sync with
+# JCFEAT_MODEL_DOWNSAMPLE in src/jcfeatures.h -- the C encoder extracts
+# features at that factor, and a model trained at any other factor would
+# see shifted texture features.
+DEFAULT_DOWNSAMPLE = 4
+
 FEATURE_NAMES = [
     "bytes_per_mpx",
     "entropy",
@@ -56,13 +62,21 @@ def dct_ac_energy(gray: np.ndarray) -> float:
     return float(np.mean(ac_energy))
 
 
-def extract(image_path: Path) -> dict:
+def extract(image_path: Path, downsample: int = DEFAULT_DOWNSAMPLE) -> dict:
     with Image.open(image_path) as img:
         rgb = np.asarray(img.convert("RGB"))
         hsv = np.asarray(img.convert("HSV"))
 
-    gray = np.asarray(Image.fromarray(rgb).convert("L"))
+    # bytes_per_mpx stays per megapixel of the source image; every other
+    # feature is computed from every `downsample`-th pixel of every
+    # `downsample`-th row -- the same decimation as
+    # jcfeat_extract_downsampled() in src/jcfeatures.c.
     megapixels = (rgb.shape[0] * rgb.shape[1]) / 1_000_000
+    if downsample > 1:
+        rgb = np.ascontiguousarray(rgb[::downsample, ::downsample])
+        hsv = np.ascontiguousarray(hsv[::downsample, ::downsample])
+
+    gray = np.asarray(Image.fromarray(rgb).convert("L"))
     edge_density, edge_variance = edge_stats(gray)
 
     return {
@@ -82,6 +96,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bench-dir", type=Path, default=Path("../../bench_results"))
     parser.add_argument("--testimages-dir", type=Path, default=Path("../../testimages"))
+    parser.add_argument(
+        "--downsample",
+        type=int,
+        default=DEFAULT_DOWNSAMPLE,
+        help="extract features from every Nth pixel of every Nth row (1 = full resolution); "
+        "must match JCFEAT_MODEL_DOWNSAMPLE in src/jcfeatures.h",
+    )
     args = parser.parse_args()
 
     splits = {
@@ -101,7 +122,7 @@ def main() -> None:
             writer.writeheader()
             for i, row in enumerate(rows, 1):
                 image_path = images_dir / row["image"]
-                features = extract(image_path)
+                features = extract(image_path, args.downsample)
                 writer.writerow(
                     {
                         "image": row["image"],

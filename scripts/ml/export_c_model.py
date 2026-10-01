@@ -56,7 +56,8 @@ def main() -> None:
             " *   Predicted label = argmax(output) (0=simple, 1=complex).",
             " *",
             " * Features must be computed exactly as in scripts/ml/extract_features.py",
-            " * -- see src/jcfeatures.c for the C port (jcfeat_extract()).",
+            " * -- see src/jcfeatures.c for the C port (jcfeat_extract_downsampled() at",
+            " * JCFEAT_MODEL_DOWNSAMPLE).",
             " */",
             "",
         ]

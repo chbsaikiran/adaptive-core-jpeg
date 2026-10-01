@@ -1012,6 +1012,32 @@ if(ENABLE_STATIC)
       target_compile_definitions(jcadaptive-static PRIVATE JPAR_USE_OPENMP)
     endif()
 
+    # Measurement driver for the adaptive-core encoder: per image, runs
+    # always-2-core, always-4-core and adaptive encodes in timestamped
+    # phases, for the energy-per-image and classifier-overhead analyses in
+    # scripts/measure/ -- see jcadaptivebench.c.  POSIX only.
+    if(UNIX)
+      add_executable(jcadaptivebench-static src/jcadaptivebench.c
+        src/jcparallel.c src/jcimageload.c src/jcfeatures.c
+        src/complexity_model.c src/cdjpeg.c src/rdbmp.c
+        src/wrapper/rdpng-8.c ${ZLIB_STATIC_SOURCES} ${SPNG_STATIC_SOURCES}
+        src/wrapper/rdppm-8.c)
+      set_property(TARGET jcadaptivebench-static PROPERTY COMPILE_FLAGS
+        "-DBMP_SUPPORTED -DPNG_SUPPORTED -DSPNG_STATIC -DPPM_SUPPORTED")
+      target_link_libraries(jcadaptivebench-static jpeg-static m)
+      if(SPNG_LIBRARY)
+        target_link_libraries(jcadaptivebench-static ${SPNG_LIBRARY})
+      endif()
+      if(NOT WITH_SYSTEM_SPNG AND ZLIB_LIBRARY)
+        target_link_libraries(jcadaptivebench-static ${ZLIB_LIBRARY})
+      endif()
+      if(WITH_OPENMP)
+        target_link_libraries(jcadaptivebench-static OpenMP::OpenMP_C)
+        target_compile_definitions(jcadaptivebench-static PRIVATE
+          JPAR_USE_OPENMP)
+      endif()
+    endif()
+
     include(CheckFunctionExists)
     check_function_exists(fmemopen HAVE_FMEMOPEN)
     if(HAVE_FMEMOPEN)

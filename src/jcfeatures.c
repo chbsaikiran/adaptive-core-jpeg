@@ -18,16 +18,20 @@
 
 /* --- grayscale conversion (matches Pillow's RGB->"L" weights) ---------- */
 
+/* Writes every `step`-th pixel of every `step`-th row, so `gray` is the
+ * ceil(width/step) x ceil(height/step) decimated image. */
 static void to_grayscale(JSAMPARRAY rows, JDIMENSION width, JDIMENSION height,
-                          int components, unsigned char *gray) {
+                          int components, JDIMENSION step,
+                          unsigned char *gray) {
   JDIMENSION x, y;
+  size_t out = 0;
 
-  for (y = 0; y < height; y++) {
+  for (y = 0; y < height; y += step) {
     JSAMPROW row = rows[y];
 
-    for (x = 0; x < width; x++) {
+    for (x = 0; x < width; x += step) {
       if (components == 1) {
-        gray[(size_t)y * width + x] = row[x];
+        gray[out++] = row[x];
       } else {
         int r = row[x * components + 0];
         int g = row[x * components + 1];
@@ -36,7 +40,7 @@ static void to_grayscale(JSAMPARRAY rows, JDIMENSION width, JDIMENSION height,
 
         if (l > 255) l = 255;
         if (l < 0) l = 0;
-        gray[(size_t)y * width + x] = (unsigned char)l;
+        gray[out++] = (unsigned char)l;
       }
     }
   }
@@ -122,17 +126,18 @@ static void sobel_stats(const unsigned char *gray, JDIMENSION width,
  * (colorsys/Pillow's RGB->HSV convention, 0-255 scale). */
 
 static void channel_stats(JSAMPARRAY rows, JDIMENSION width,
-                           JDIMENSION height, int components, double *r_var,
-                           double *g_var, double *b_var, double *mean_sat) {
+                           JDIMENSION height, int components, JDIMENSION step,
+                           double *r_var, double *g_var, double *b_var,
+                           double *mean_sat) {
   double r_sum = 0, g_sum = 0, b_sum = 0;
   double r_sq = 0, g_sq = 0, b_sq = 0, sat_sum = 0;
-  size_t n = (size_t)width * height;
+  size_t n = (size_t)((width + step - 1) / step) * ((height + step - 1) / step);
   JDIMENSION x, y;
 
-  for (y = 0; y < height; y++) {
+  for (y = 0; y < height; y += step) {
     JSAMPROW row = rows[y];
 
-    for (x = 0; x < width; x++) {
+    for (x = 0; x < width; x += step) {
       int r, g, b, maxc, minc, s;
 
       if (components == 1) {
@@ -253,17 +258,20 @@ static double mean_dct_ac_energy(const unsigned char *gray, JDIMENSION width,
   return (blocks > 0) ? (total / (double)blocks) : 0.0;
 }
 
-/* --- public entry point -------------------------------------------------- */
+/* --- public entry points ------------------------------------------------- */
 
-EXTERN(void) jcfeat_extract(JSAMPARRAY rows, JDIMENSION width,
-                             JDIMENSION height, int components,
-                             unsigned long file_size_bytes,
-                             double features_out[JCFEAT_NUM_FEATURES]) {
+EXTERN(void) jcfeat_extract_downsampled(JSAMPARRAY rows, JDIMENSION width,
+                                         JDIMENSION height, int components,
+                                         unsigned long file_size_bytes,
+                                         int downsample,
+                                         double features_out[JCFEAT_NUM_FEATURES]) {
   unsigned char *gray;
+  JDIMENSION step = (downsample > 1) ? (JDIMENSION)downsample : 1;
+  JDIMENSION dw = (width + step - 1) / step, dh = (height + step - 1) / step;
   double megapixels = ((double)width * (double)height) / 1000000.0;
   double r_var, g_var, b_var, mean_sat, density, variance;
 
-  gray = (unsigned char *)malloc((size_t)width * height);
+  gray = (unsigned char *)malloc((size_t)dw * dh);
   if (!gray) {
     int i;
 
@@ -272,24 +280,33 @@ EXTERN(void) jcfeat_extract(JSAMPARRAY rows, JDIMENSION width,
     return;
   }
 
-  to_grayscale(rows, width, height, components, gray);
+  to_grayscale(rows, width, height, components, step, gray);
   init_dct_cos();
 
+  /* Per megapixel of the *source* image, whatever the downsample factor. */
   features_out[0] = (double)file_size_bytes / megapixels;
-  features_out[1] = shannon_entropy(gray, (size_t)width * height);
+  features_out[1] = shannon_entropy(gray, (size_t)dw * dh);
 
-  sobel_stats(gray, width, height, &density, &variance);
+  sobel_stats(gray, dw, dh, &density, &variance);
   features_out[2] = density;
   features_out[3] = variance;
 
-  channel_stats(rows, width, height, components, &r_var, &g_var, &b_var,
+  channel_stats(rows, width, height, components, step, &r_var, &g_var, &b_var,
                 &mean_sat);
   features_out[4] = r_var;
   features_out[5] = g_var;
   features_out[6] = b_var;
   features_out[7] = mean_sat;
 
-  features_out[8] = mean_dct_ac_energy(gray, width, height);
+  features_out[8] = mean_dct_ac_energy(gray, dw, dh);
 
   free(gray);
+}
+
+EXTERN(void) jcfeat_extract(JSAMPARRAY rows, JDIMENSION width,
+                             JDIMENSION height, int components,
+                             unsigned long file_size_bytes,
+                             double features_out[JCFEAT_NUM_FEATURES]) {
+  jcfeat_extract_downsampled(rows, width, height, components, file_size_bytes,
+                             1, features_out);
 }

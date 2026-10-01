@@ -27,6 +27,12 @@
 
 #define JCFEAT_NUM_FEATURES 9
 
+/* The downsample factor the committed complexity_model.c was trained at --
+ * callers feeding features to score() must extract them with
+ * jcfeat_extract_downsampled() at this factor.  Keep in sync with
+ * scripts/ml/extract_features.py's DEFAULT_DOWNSAMPLE. */
+#define JCFEAT_MODEL_DOWNSAMPLE 4
+
 /*
  * Feature order (must match scripts/ml/extract_features.py's FEATURE_NAMES,
  * and thus the input order complexity_model.c's score() expects):
@@ -50,5 +56,24 @@ EXTERN(void) jcfeat_extract(JSAMPARRAY rows, JDIMENSION width,
                              JDIMENSION height, int components,
                              unsigned long file_size_bytes,
                              double features_out[JCFEAT_NUM_FEATURES]);
+
+/*
+ * Same features, computed from a decimated copy of the image: only every
+ * `downsample`-th pixel of every `downsample`-th row is looked at (no
+ * averaging), cutting the cost by roughly downsample^2.  downsample <= 1
+ * is identical to jcfeat_extract().  bytes_per_mpx still refers to the
+ * source image's full megapixel count.
+ *
+ * Decimation shifts the texture features (neighbouring samples are further
+ * apart, so edge_density/edge_variance/dct_ac_energy read higher than at
+ * full resolution), so a classifier must be trained on features extracted
+ * at the same factor -- scripts/ml/extract_features.py --downsample N
+ * mirrors this exactly.
+ */
+EXTERN(void) jcfeat_extract_downsampled(JSAMPARRAY rows, JDIMENSION width,
+                                         JDIMENSION height, int components,
+                                         unsigned long file_size_bytes,
+                                         int downsample,
+                                         double features_out[JCFEAT_NUM_FEATURES]);
 
 #endif /* JCFEATURES_H */

@@ -92,8 +92,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  jcfeat_extract(img.rows, img.width, img.height, img.components,
-                 file_size(in_path), features);
+  jcfeat_extract_downsampled(img.rows, img.width, img.height, img.components,
+                             file_size(in_path), JCFEAT_MODEL_DOWNSAMPLE,
+                             features);
   score(features, proba);
   predicted_label = (proba[1] > proba[0]) ? 1 : 0;
 

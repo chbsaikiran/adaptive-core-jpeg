@@ -104,6 +104,18 @@ Output: `bench_results/labels_train.csv`, `labels_val.csv` (input CSV plus
 
 ## 3. Feature extraction (`extract_features.py`)
 
+Features are computed from a **4x-decimated** copy of the image (every 4th
+pixel of every 4th row, `--downsample`, default `DEFAULT_DOWNSAMPLE = 4`),
+not the full-resolution image. At full resolution, extracting the features
+cost several times more than the JPEG encode the classifier is meant to
+optimise; decimating by 4 cuts that cost about 16x for a small accuracy
+loss (val ROC-AUC 0.983 at full resolution vs 0.958 at 4x). Decimation
+shifts the texture features (edge and DCT values read higher), so the model
+is only valid for features extracted at the factor it was trained at: the
+C encoder's `JCFEAT_MODEL_DOWNSAMPLE` (`src/jcfeatures.h`) must equal the
+`--downsample` used here. `bytes_per_mpx` is the exception -- it is always
+per megapixel of the full-size source image.
+
 For each image, loaded with Pillow, computes 9 features — all scale-invariant
 (per-pixel or per-block averages), so none of them can just re-encode image
 size, which matters since the label itself is already resolution-normalized:
@@ -138,16 +150,16 @@ support sklearn's histogram-based boosting models.
 Saved to `bench_results/complexity_model.joblib` (a dict with `model` and
 `feature_names`).
 
-**Result on this dataset:** val ROC-AUC **0.983**.
+**Result on this dataset (4x-decimated features):** val ROC-AUC **0.958**.
 
 ```
               precision    recall  f1-score   support
-      simple       0.89      0.89      0.89        18
-     complex       0.98      0.98      0.98        82
+      simple       0.79      0.83      0.81        18
+     complex       0.96      0.95      0.96        82
 ```
 
-Top features by importance: `dct_ac_energy`, `edge_density`,
-`bytes_per_mpx` — i.e. the model is mostly keying off texture/detail, which
+Top features by importance: `dct_ac_energy`, `bytes_per_mpx`,
+`edge_density` — i.e. the model is mostly keying off texture/detail, which
 lines up with what actually makes JPEG encoding slower.
 
 ## 5. How to judge whether the model is actually good (imbalance caveat)
@@ -200,7 +212,7 @@ compiled directly into `jcparallelbench` or any other C caller:
 
 ```bash
 uv run export_c_model.py --out ../../src/complexity_model.c
-#    -> src/complexity_model.c  (~50 trees, ~3200 nodes, ~300 KB)
+#    -> src/complexity_model.c  (~50 trees, ~3600 nodes, ~350 KB)
 ```
 (Omitting `--out` writes to `bench_results/complexity_model.c` instead --
 useful for a quick look without touching the committed file in `src/`.)
@@ -220,7 +232,8 @@ matched to 6 decimal places, and the file compiles cleanly with plain
 `gcc -O2` (no external libraries beyond `-lm`).
 
 **Feature extraction is now ported to C too**: `src/jcfeatures.c`
-(`jcfeat_extract()`) computes the same 9 features from already-decoded
+(`jcfeat_extract_downsampled()`, called at `JCFEAT_MODEL_DOWNSAMPLE`)
+computes the same 9 features from already-decoded
 pixel rows -- Sobel gradients, block DCT, histogram entropy, per-channel
 variance, HSV saturation. It's a close but not bit-exact port (differs in
 Sobel boundary handling and floating-point rounding from numpy/scipy); on
@@ -229,7 +242,7 @@ a real DIV2K image, every feature matched the Python pipeline to at least
 full fidelity notes.
 
 `src/jcadaptive.c` wires both pieces together end-to-end: load one image
-(`src/jcimageload.c`) -> `jcfeat_extract()` -> `score()`
+(`src/jcimageload.c`) -> `jcfeat_extract_downsampled()` -> `score()`
 (`src/complexity_model.c`) -> pick 2 or 4 cores ->
 `jpar_encode_strips_spliced()` (`src/jcparallel.c`, which also implements
 the restart-marker splice into a single output JPEG). See
